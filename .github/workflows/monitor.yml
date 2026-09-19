@@ -40,7 +40,7 @@ jobs:
           CALLMEBOT_APIKEY: ${{ secrets.CALLMEBOT_APIKEY }}
           DIAN_TIPO_PERSONA: "1"    # 1 = Persona Natural
           DIAN_TIPO_ATENCION: "2"   # 2 = Videoatencion
-          DIAN_CATEGORIA: "7"       # PRUEBA temporal: 7 = RUT (si tiene cupo)
+          DIAN_CATEGORIA: "13"      # 13 = Devoluciones
           DIAN_FILTRO: ""           # vacio = cualquier ciudad
         run: python monitor_dian.py
 
