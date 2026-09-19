@@ -1,0 +1,57 @@
+name: Monitor citas DIAN
+
+on:
+  schedule:
+    # Cada 10 minutos. GitHub evalua el cron en UTC, pero al ser un intervalo
+    # fijo no hay que convertir nada. Ojo: los cron de GitHub Actions se pueden
+    # retrasar algunos minutos cuando la plataforma esta con mucha carga.
+    - cron: "*/10 * * * *"
+  workflow_dispatch: {}   # permite lanzarlo a mano desde la pestana Actions
+
+# Necesario para que el job pueda guardar state.json de vuelta en el repo
+permissions:
+  contents: write
+
+# Si una corrida se queda colgada, que no se encimen
+concurrency:
+  group: monitor-dian
+  cancel-in-progress: false
+
+jobs:
+  revisar:
+    runs-on: ubuntu-latest
+    timeout-minutes: 5
+
+    steps:
+      - name: Clonar el repo
+        uses: actions/checkout@v4
+
+      - name: Preparar Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Instalar dependencias
+        run: pip install --no-cache-dir -r requirements.txt
+
+      - name: Consultar la DIAN
+        env:
+          CALLMEBOT_PHONE: ${{ secrets.CALLMEBOT_PHONE }}
+          CALLMEBOT_APIKEY: ${{ secrets.CALLMEBOT_APIKEY }}
+          DIAN_TIPO_PERSONA: "1"    # 1 = Persona Natural
+          DIAN_TIPO_ATENCION: "2"   # 2 = Videoatencion
+          DIAN_CATEGORIA: "13"      # 13 = Devoluciones
+          DIAN_FILTRO: ""           # vacio = cualquier ciudad
+        run: python monitor_dian.py
+
+      - name: Guardar el estado
+        run: |
+          if [[ -n "$(git status --porcelain state.json)" ]]; then
+            git config user.name  "github-actions[bot]"
+            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+            git add state.json
+            git commit -m "estado: $(date -u '+%Y-%m-%d %H:%M UTC')"
+            git push
+          else
+            echo "Sin cambios en el estado."
+          fi
