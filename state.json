@@ -1,7 +1,11 @@
 {
-  "avisados": [],
+  "avisados": [
+    "Inscripción o actualización RUT persona natural.",
+    "Inscripción o actualización RUT sucesión Ilíquida.",
+    "Inscripción RUT persona jurídica o asimilada sin NIT."
+  ],
   "fallos": 0,
-  "ultima_revision": "2026-09-18 23:38:41",
+  "ultima_revision": "2026-09-18 23:44:01",
   "ultimo_error": null,
   "aviso_fallo_enviado": false
 }
