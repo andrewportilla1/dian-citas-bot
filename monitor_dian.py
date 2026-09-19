@@ -14,11 +14,40 @@ Como funciona (sin navegador, solo HTTP):
                                         -> devuelve la definicion del player,
                                            de donde sale el token cifrado
                                            "ConfiguracionServicioRestEncriptado".
+                                           Se pide UNA sola vez por corrida y se
+                                           reutiliza en todos los sondeos.
   3. POST /Player.aspx/ValidadorValidar
                                         -> con el manejador "manejadorEncontroColas"
                                            devuelve los tramites disponibles.
                                            Encontrado=true  -> HAY cita
                                            Encontrado=false -> no hay
+
+RITMO ADAPTATIVO
+GitHub Actions no puede disparar mas seguido que cada 5 minutos, asi que el
+workflow corre cada 5 minutos y es este script el que decide, segun el dia y la
+hora de Bogota, si revisa y cuantas veces revisa dentro de la misma corrida.
+
+Segun la experiencia reportada, la DIAN abre cupos sobre todo los VIERNES
+(alrededor de las 9:30 am, y alguna vez a las 3 pm) y suelta cancelaciones los
+MARTES y MIERCOLES.
+
+  ALTA    viernes 8:30-12:30 y 14:00-17:00   -> 4 sondeos por corrida (~75 seg)
+  MEDIA   martes y miercoles 8:00-17:00      -> 1 sondeo cada 5 minutos
+          viernes, resto de 7:00-19:00
+  NORMAL  lunes y jueves 8:00-17:00          -> 1 sondeo cada 10 minutos
+  BAJA    resto de dias habiles 6:00-21:00   -> 1 sondeo cada 20 minutos
+  MINIMA  noches y fines de semana           -> 1 sondeo cada 30 minutos
+
+PRUDENCIA (para no molestar al servidor de la DIAN ni terminar bloqueados)
+  - Espera aleatoria de unos segundos al arrancar, para no pegarle al servidor
+    en el segundo exacto cada vez.
+  - Reutiliza el token cifrado dentro de la corrida: el primer sondeo cuesta 3
+    peticiones y los siguientes solo 2.
+  - En la ventana mas intensa esto son unas 2 peticiones por minuto, comparable
+    a una persona refrescando la pagina.
+  - Si la DIAN responde 403 o 429 (bloqueo o "muy rapido"), corta la corrida de
+    inmediato y no insiste. Dos cortes seguidos y entra en modo prudente.
+  - Fuera de las ventanas buenas casi no consulta.
 
 Estado: guarda en state.json los tramites ya avisados para no repetir la
 alerta en cada corrida mientras el cupo siga abierto.
@@ -26,6 +55,7 @@ alerta en cada corrida mientras el cupo siga abierto.
 
 import json
 import os
+import random
 import re
 import sys
 import time
@@ -66,10 +96,16 @@ WA_APIKEY = os.environ.get("CALLMEBOT_APIKEY", "").strip()
 STATE_FILE = os.environ.get("DIAN_STATE_FILE", "state.json")
 
 # Cuantas corridas fallidas seguidas antes de avisar que el bot esta roto
-FALLOS_ANTES_DE_AVISAR = int(os.environ.get("DIAN_FALLOS_ANTES_DE_AVISAR", "6"))
+FALLOS_ANTES_DE_AVISAR = int(os.environ.get("DIAN_FALLOS_ANTES_DE_AVISAR", "8"))
+
+# Poner "1" para forzar un sondeo ignorando el horario (util para probar)
+FORZAR = os.environ.get("DIAN_FORZAR", "").strip() == "1"
+
+# Segundos de margen: la corrida nunca debe pasarse del hueco de 5 minutos
+PRESUPUESTO_SEG = int(os.environ.get("DIAN_PRESUPUESTO_SEG", "210"))
 
 TIMEOUT = 30
-REINTENTOS = 3
+REINTENTOS = 2
 
 UA = (
     "Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36 "
@@ -79,12 +115,60 @@ UA = (
 BOGOTA = timezone(timedelta(hours=-5))
 
 
+def ahora_dt():
+    return datetime.now(BOGOTA)
+
+
 def ahora():
-    return datetime.now(BOGOTA).strftime("%Y-%m-%d %H:%M:%S")
+    return ahora_dt().strftime("%Y-%m-%d %H:%M:%S")
 
 
 def log(msg):
     print("[{}] {}".format(ahora(), msg), flush=True)
+
+
+class Bloqueado(Exception):
+    """La DIAN respondio 403/429: hay que parar y no insistir."""
+
+
+# ----------------------------------------------------------------------------
+# Ritmo adaptativo
+# ----------------------------------------------------------------------------
+
+DIAS = ["lunes", "martes", "miercoles", "jueves", "viernes", "sabado", "domingo"]
+
+
+def plan_de_sondeo(now):
+    """Devuelve (etiqueta, numero_de_sondeos, segundos_entre_sondeos) o None."""
+    dow = now.weekday()          # 0 = lunes ... 4 = viernes, 5-6 = fin de semana
+    m = now.hour * 60 + now.minute
+    minuto = now.minute
+
+    def en(desde, hasta):
+        return desde <= m < hasta
+
+    # Viernes, ventanas calientes: 8:30-12:30 y 14:00-17:00
+    if dow == 4 and (en(8 * 60 + 30, 12 * 60 + 30) or en(14 * 60, 17 * 60)):
+        return ("ALTA", 4, 75)
+
+    # Martes y miercoles: sueltan las cancelaciones
+    if dow in (1, 2) and en(8 * 60, 17 * 60):
+        return ("MEDIA", 1, 0)
+
+    # Viernes, resto de la jornada
+    if dow == 4 and en(7 * 60, 19 * 60):
+        return ("MEDIA", 1, 0)
+
+    # Lunes y jueves en horario habil: cada 10 minutos
+    if dow in (0, 3) and en(8 * 60, 17 * 60):
+        return ("NORMAL", 1, 0) if minuto % 10 < 5 else None
+
+    # Resto de dias habiles, horario amplio: cada 20 minutos
+    if dow <= 4 and en(6 * 60, 21 * 60):
+        return ("BAJA", 1, 0) if minuto % 20 < 5 else None
+
+    # Noches y fines de semana: cada 30 minutos
+    return ("MINIMA", 1, 0) if minuto % 30 < 5 else None
 
 
 # ----------------------------------------------------------------------------
@@ -99,10 +183,14 @@ class DianClient:
             "Accept-Language": "es-CO,es;q=0.9",
         })
         self._enc_token = None
+        self.peticiones = 0
 
     def _anticsrf(self):
         """El token es de un solo uso: se pide uno nuevo antes de cada POST."""
         r = self.s.get(BASE + "/", timeout=TIMEOUT)
+        self.peticiones += 1
+        if r.status_code in (403, 429):
+            raise Bloqueado("GET / devolvio HTTP {}".format(r.status_code))
         r.raise_for_status()
         m = re.search(r'name="anticsrf"[^>]*value="([^"]+)"', r.text)
         if not m:
@@ -124,6 +212,9 @@ class DianClient:
             data=json.dumps(payload),
             timeout=TIMEOUT,
         )
+        self.peticiones += 1
+        if r.status_code in (403, 429):
+            raise Bloqueado("{} devolvio HTTP {}".format(metodo, r.status_code))
         if r.status_code != 200:
             raise RuntimeError(
                 "{} devolvio HTTP {}: {}".format(metodo, r.status_code, r.text[:200])
@@ -133,7 +224,7 @@ class DianClient:
         return json.loads(outer["d"]) if isinstance(outer.get("d"), str) else outer["d"]
 
     def token_cifrado(self):
-        """ConfiguracionServicioRestEncriptado: cambia por sesion/despliegue."""
+        """Se pide una sola vez por corrida y se reutiliza en cada sondeo."""
         if self._enc_token:
             return self._enc_token
         data = self._post(
@@ -258,13 +349,21 @@ def enviar_whatsapp(texto):
 # Estado
 # ----------------------------------------------------------------------------
 
+def estado_vacio():
+    return {"avisados": [], "fallos": 0, "ultima_revision": None,
+            "ultimo_error": None, "aviso_fallo_enviado": False,
+            "bloqueos": 0, "ultimo_plan": None}
+
+
 def leer_estado():
     try:
         with open(STATE_FILE, "r", encoding="utf-8") as f:
-            return json.load(f)
+            st = json.load(f)
+        base = estado_vacio()
+        base.update(st)
+        return base
     except Exception:
-        return {"avisados": [], "fallos": 0, "ultima_revision": None,
-                "ultimo_error": None, "aviso_fallo_enviado": False}
+        return estado_vacio()
 
 
 def guardar_estado(st):
@@ -286,28 +385,131 @@ NOMBRE_CATEGORIA = {
 }
 
 
-def main():
-    st = leer_estado()
-    etiqueta = "{} / {} / {}".format(
+def etiqueta_busqueda():
+    return "{} / {} / {}".format(
         "Persona Natural" if TIPO_PERSONA == "1" else "Persona Juridica",
         NOMBRE_ATENCION.get(TIPO_ATENCION, TIPO_ATENCION),
         NOMBRE_CATEGORIA.get(CATEGORIA, CATEGORIA),
     )
-    log("Revisando: " + etiqueta)
 
-    tramites, error = None, None
-    for intento in range(1, REINTENTOS + 1):
-        try:
-            tramites = DianClient().consultar_tramites(
-                TIPO_PERSONA, CATEGORIA, TIPO_ATENCION)
+
+def avisar(tramites, st):
+    """Manda el WhatsApp solo si hay algo que no se haya avisado antes."""
+    nuevos = [t for t in tramites if t not in st.get("avisados", [])]
+    if not nuevos:
+        log("Hay cupo pero ya te avise de estos tramites. No repito.")
+        return False
+    lineas = "\n".join("- " + t for t in tramites)
+    mensaje = (
+        "HAY CITA EN LA DIAN\n\n"
+        "{}\n\n"
+        "Tramites disponibles:\n{}\n\n"
+        "Agenda ya: https://agendamiento.dian.gov.co/\n"
+        "Ruta: Agendar cita > Persona Natural > Videoatencion > Devoluciones\n\n"
+        "({})"
+    ).format(etiqueta_busqueda(), lineas, ahora())
+    enviar_whatsapp(mensaje)
+    st["avisados"] = tramites
+    return True
+
+
+def main():
+    st = leer_estado()
+    now = ahora_dt()
+
+    plan = ("FORZADO", 1, 0) if FORZAR else plan_de_sondeo(now)
+    if plan is None:
+        log("{} {} - fuera de ventana, no consulto (asi no molestamos a la DIAN)."
+            .format(DIAS[now.weekday()], now.strftime("%H:%M")))
+        return 0
+
+    etiqueta_plan, n_sondeos, espaciado = plan
+
+    # Si venimos de bloqueos, bajamos el ritmo a lo minimo por prudencia
+    if st.get("bloqueos", 0) >= 2 and etiqueta_plan == "ALTA":
+        log("Venimos de {} bloqueos: bajo el ritmo por prudencia."
+            .format(st["bloqueos"]))
+        n_sondeos, espaciado = 1, 0
+
+    log("{} {} | ritmo {} | {} sondeo(s) | buscando: {}".format(
+        DIAS[now.weekday()], now.strftime("%H:%M"), etiqueta_plan,
+        n_sondeos, etiqueta_busqueda()))
+
+    # Espera aleatoria para no pegarle al servidor en el segundo exacto
+    jitter = random.uniform(0, 12)
+    time.sleep(jitter)
+
+    cliente = DianClient()
+    inicio = time.time()
+    tramites = None
+    error = None
+    bloqueado = False
+
+    for i in range(1, n_sondeos + 1):
+        if time.time() - inicio > PRESUPUESTO_SEG:
+            log("Se acabo el tiempo de la corrida, corto aqui.")
             break
-        except Exception as e:
-            error = e
-            log("Intento {}/{} fallo: {}".format(intento, REINTENTOS, e))
-            if intento < REINTENTOS:
-                time.sleep(5 * intento)
 
-    # --- la consulta fallo -------------------------------------------------
+        encontrados, err_local = None, None
+        for intento in range(1, REINTENTOS + 1):
+            try:
+                encontrados = cliente.consultar_tramites(
+                    TIPO_PERSONA, CATEGORIA, TIPO_ATENCION)
+                break
+            except Bloqueado as e:
+                log("La DIAN nos corto: {}. Paro esta corrida.".format(e))
+                bloqueado, err_local = True, e
+                break
+            except Exception as e:
+                err_local = e
+                log("Sondeo {} intento {}/{} fallo: {}".format(
+                    i, intento, REINTENTOS, e))
+                if intento < REINTENTOS:
+                    time.sleep(4 * intento)
+
+        if bloqueado:
+            error = err_local
+            break
+
+        if encontrados is None:
+            error = err_local
+            break
+
+        tramites = encontrados
+        if FILTRO:
+            tramites = [t for t in tramites if FILTRO.lower() in t.lower()]
+
+        log("Sondeo {}/{}: {}".format(
+            i, n_sondeos, tramites if tramites else "sin cupo"))
+
+        if tramites:
+            break   # ya encontramos, no hay para que seguir golpeando
+
+        if i < n_sondeos:
+            restante = PRESUPUESTO_SEG - (time.time() - inicio)
+            if restante < espaciado + 10:
+                log("No alcanza para otro sondeo, corto aqui.")
+                break
+            time.sleep(espaciado + random.uniform(-5, 5))
+
+    # --- nos bloquearon ----------------------------------------------------
+    if bloqueado:
+        st["bloqueos"] = st.get("bloqueos", 0) + 1
+        st["ultimo_error"] = str(error)[:300]
+        log("Bloqueos acumulados: {}. Peticiones esta corrida: {}".format(
+            st["bloqueos"], cliente.peticiones))
+        if st["bloqueos"] >= 5 and not st.get("aviso_fallo_enviado"):
+            enviar_whatsapp(
+                "[Bot DIAN] La pagina de la DIAN me esta rechazando las consultas "
+                "({} veces seguidas). Baje el ritmo automaticamente. "
+                "Si sigue asi hay que revisar el bot.".format(st["bloqueos"])
+            )
+            st["aviso_fallo_enviado"] = True
+        st["ultimo_plan"] = etiqueta_plan
+        guardar_estado(st)
+        return 0
+
+    # --- la consulta fallo por otra razon ----------------------------------
     if tramites is None:
         st["fallos"] = st.get("fallos", 0) + 1
         st["ultimo_error"] = str(error)[:300]
@@ -319,46 +521,25 @@ def main():
                 "Ultimo error: {}".format(st["fallos"], st["ultimo_error"])
             )
             st["aviso_fallo_enviado"] = True
+        st["ultimo_plan"] = etiqueta_plan
         guardar_estado(st)
         return 0
 
+    # --- todo salio bien ---------------------------------------------------
     st["fallos"] = 0
+    st["bloqueos"] = 0
     st["ultimo_error"] = None
     st["aviso_fallo_enviado"] = False
+    st["ultimo_plan"] = etiqueta_plan
 
-    # --- filtro opcional ---------------------------------------------------
-    if FILTRO:
-        tramites = [t for t in tramites if FILTRO.lower() in t.lower()]
-
-    log("Tramites con cupo: {}".format(tramites if tramites else "ninguno"))
-
-    # --- no hay cupo -------------------------------------------------------
     if not tramites:
         if st.get("avisados"):
             log("Se cerro el cupo que ya habia avisado; limpio el estado.")
         st["avisados"] = []
-        guardar_estado(st)
-        return 0
+    else:
+        avisar(tramites, st)
 
-    # --- hay cupo: aviso solo lo que no he avisado antes --------------------
-    nuevos = [t for t in tramites if t not in st.get("avisados", [])]
-    if not nuevos:
-        log("Hay cupo pero ya te avise de estos tramites. No repito.")
-        guardar_estado(st)
-        return 0
-
-    lineas = "\n".join("- " + t for t in tramites)
-    mensaje = (
-        "HAY CITA EN LA DIAN\n\n"
-        "{}\n\n"
-        "Tramites disponibles:\n{}\n\n"
-        "Agenda ya: https://agendamiento.dian.gov.co/\n"
-        "Ruta: Agendar cita > Persona Natural > Videoatencion > Devoluciones\n\n"
-        "({})"
-    ).format(etiqueta, lineas, ahora())
-
-    enviar_whatsapp(mensaje)
-    st["avisados"] = tramites
+    log("Peticiones a la DIAN esta corrida: {}".format(cliente.peticiones))
     guardar_estado(st)
     return 0
 
