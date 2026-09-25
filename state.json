@@ -1,9 +1,11 @@
 {
   "avisados": [],
   "fallos": 0,
-  "ultima_revision": "2026-09-25 16:29:36",
+  "ultima_revision": "2026-09-25 16:39:45",
   "ultimo_error": null,
   "aviso_fallo_enviado": false,
   "bloqueos": 0,
-  "ultimo_plan": "ALTA"
+  "ultimo_plan": "FORZADO",
+  "ultimo_aviso": null,
+  "avisos_enviados": 0
 }
