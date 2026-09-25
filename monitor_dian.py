@@ -49,8 +49,11 @@ PRUDENCIA (para no molestar al servidor de la DIAN ni terminar bloqueados)
     inmediato y no insiste. Dos cortes seguidos y entra en modo prudente.
   - Fuera de las ventanas buenas casi no consulta.
 
-Estado: guarda en state.json los tramites ya avisados para no repetir la
-alerta en cada corrida mientras el cupo siga abierto.
+AVISOS
+Avisa CADA VEZ que ve cupo, aunque ya haya avisado de lo mismo. Si abren a
+las 3:50, otro a las 3:55 y otro a las 3:57, salen los tres avisos. Como el
+bot corta el sondeo apenas encuentra algo, sale como maximo un mensaje por
+corrida: uno cada 5 minutos mientras el cupo siga abierto.
 """
 
 import json
@@ -86,7 +89,8 @@ TIPO_PERSONA = os.environ.get("DIAN_TIPO_PERSONA", "1")
 TIPO_ATENCION = os.environ.get("DIAN_TIPO_ATENCION", "2")
 CATEGORIA = os.environ.get("DIAN_CATEGORIA", "13")
 
-# Filtro opcional por texto (ej. "Bogot"). Vacio = avisa por cualquier ciudad.
+# Filtro por texto. "Bogot" = solo Bogota (funciona con y sin tilde).
+# Vacio = avisa por cualquier ciudad.
 FILTRO = os.environ.get("DIAN_FILTRO", "").strip()
 
 # CallMeBot
@@ -352,7 +356,8 @@ def enviar_whatsapp(texto):
 def estado_vacio():
     return {"avisados": [], "fallos": 0, "ultima_revision": None,
             "ultimo_error": None, "aviso_fallo_enviado": False,
-            "bloqueos": 0, "ultimo_plan": None}
+            "bloqueos": 0, "ultimo_plan": None,
+            "ultimo_aviso": None, "avisos_enviados": 0}
 
 
 def leer_estado():
@@ -394,11 +399,13 @@ def etiqueta_busqueda():
 
 
 def avisar(tramites, st):
-    """Manda el WhatsApp solo si hay algo que no se haya avisado antes."""
-    nuevos = [t for t in tramites if t not in st.get("avisados", [])]
-    if not nuevos:
-        log("Hay cupo pero ya te avise de estos tramites. No repito.")
-        return False
+    """Avisa SIEMPRE que vea cupo, aunque ya haya avisado de lo mismo antes.
+
+    Andres lo pidio asi: si abren cupo a las 3:50, otro a las 3:55 y otro a
+    las 3:57, quiere los tres avisos. Como el bot corta el sondeo apenas
+    encuentra algo, sale como maximo un mensaje por corrida, o sea uno cada
+    5 minutos mientras el cupo siga abierto.
+    """
     lineas = "\n".join("- " + t for t in tramites)
     mensaje = (
         "HAY CITA EN LA DIAN\n\n"
@@ -410,6 +417,8 @@ def avisar(tramites, st):
     ).format(etiqueta_busqueda(), lineas, ahora())
     enviar_whatsapp(mensaje)
     st["avisados"] = tramites
+    st["ultimo_aviso"] = ahora()
+    st["avisos_enviados"] = st.get("avisos_enviados", 0) + 1
     return True
 
 
