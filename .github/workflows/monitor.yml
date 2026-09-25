@@ -49,13 +49,19 @@ jobs:
 
       - name: Guardar el estado
         run: |
-          if [[ -n "$(git status --porcelain state.json)" ]]; then
-            git config user.name  "github-actions[bot]"
-            git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-            git add state.json
-            git pull --rebase --autostash
-            git commit -m "estado: $(date -u '+%Y-%m-%d %H:%M UTC')"
-            git push
-          else
+          if [[ -z "$(git status --porcelain state.json)" ]]; then
             echo "Sin cambios en el estado."
+            exit 0
           fi
+          git config user.name  "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          # Primero sincronizamos, y SOLO despues montamos el archivo.
+          # (Si se hace al reves, el autostash lo desmonta y el commit falla.)
+          git pull --rebase --autostash
+          git add state.json
+          if git diff --cached --quiet; then
+            echo "Nada que confirmar despues de sincronizar."
+            exit 0
+          fi
+          git commit -m "estado: $(date -u '+%Y-%m-%d %H:%M UTC')"
+          git push
