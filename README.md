@@ -1,7 +1,7 @@
 # Bot de citas DIAN → WhatsApp
 
 Vigila el agendamiento de la DIAN y manda un WhatsApp apenas se habilite una cita de
-**Persona Natural + Videoatención + Devoluciones**, en cualquier ciudad.
+**Persona Natural + Videoatención + Devoluciones**, solo en **Bogotá**.
 
 Corre solo en GitHub Actions. No depende de que ningún computador esté encendido.
 
@@ -43,7 +43,7 @@ El objetivo es no molestar ni terminar bloqueados:
 | Tipo de persona | Persona Natural |
 | Tipo de atención | Videoatención |
 | Servicio | Devoluciones |
-| Ciudad | Cualquiera |
+| Ciudad | Solo Bogotá |
 | Aviso | WhatsApp vía CallMeBot |
 
 Todo se cambia en `.github/workflows/monitor.yml`, en el bloque `env:`.
@@ -53,7 +53,7 @@ Todo se cambia en `.github/workflows/monitor.yml`, en el bloque `env:`.
 | `DIAN_TIPO_PERSONA` | `1` Persona Natural · `2` Persona Jurídica |
 | `DIAN_TIPO_ATENCION` | `2` Videoatención · `1` Presencial |
 | `DIAN_CATEGORIA` | `13` Devoluciones · `7` RUT y orientación TAC · `11` Conferencias · `15` NAF · `16` Inconsistencias Grandes Contribuyentes · `17` Cobranzas · `19` Defensoría |
-| `DIAN_FILTRO` | Vacío avisa por cualquier ciudad. `Bogot` para solo Bogotá |
+| `DIAN_FILTRO` | `Bogot` avisa solo de Bogotá (funciona con y sin tilde). Vacío avisa por cualquier ciudad |
 
 Las ventanas horarias se cambian en la función `plan_de_sondeo()` de `monitor_dian.py`.
 
@@ -63,7 +63,7 @@ Las ventanas horarias se cambian en la función `plan_de_sondeo()` de `monitor_d
 
 ## Cómo son las alertas
 
-Llega un solo mensaje por tanda de cupo, no uno cada revisión:
+Avisa **cada vez** que ve cupo, aunque ya haya avisado de lo mismo. Si abren a las 3:50, otro a las 3:55 y otro a las 3:57, llegan los tres mensajes. Como el bot deja de sondear apenas encuentra algo, sale como máximo un mensaje por corrida: uno cada 5 minutos mientras el cupo siga abierto.
 
     HAY CITA EN LA DIAN
 
@@ -71,12 +71,11 @@ Llega un solo mensaje por tanda de cupo, no uno cada revisión:
 
     Tramites disponibles:
     - Bogota "Solicitud de devolucion y/o compensacion persona natural".
-    - Cali "Solicitud de devolucion y/o compensacion persona natural".
 
     Agenda ya: https://agendamiento.dian.gov.co/
     Ruta: Agendar cita > Persona Natural > Videoatencion > Devoluciones
 
-Si aparece un trámite nuevo que no se había avisado, vuelve a escribir. Cuando el cupo se cierra, limpia su estado y queda listo para la próxima vez.
+Los cupos duran minutos, así que conviene entrar a agendar apenas llegue el mensaje.
 
 ---
 
