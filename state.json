@@ -1,11 +1,7 @@
 {
-  "avisados": [
-    "“Medellín - Solicitud de devolución y/o compensación Vehículos eléctricos o Híbridos persona natural”",
-    "Bogotá \"Solicitud de devolución y/o compensación persona natural\".",
-    "Cali “Solicitud de devolución y/o compensación persona natural”."
-  ],
+  "avisados": [],
   "fallos": 0,
-  "ultima_revision": "2026-09-25 16:12:09",
+  "ultima_revision": "2026-09-25 16:29:36",
   "ultimo_error": null,
   "aviso_fallo_enviado": false,
   "bloqueos": 0,
