@@ -47,21 +47,47 @@ jobs:
           DIAN_FORZAR: ${{ github.event_name == 'workflow_dispatch' && '1' || '' }}
         run: python monitor_dian.py
 
+      # Guarda el registro interno. NUNCA hace fallar el workflow: para cuando
+      # llega aqui, la consulta a la DIAN y el WhatsApp ya ocurrieron. Si dos
+      # corridas coinciden, no se fusiona nada (eso metia marcadores de
+      # conflicto dentro del archivo): se parte de la ultima version del
+      # remoto y se vuelve a poner la nuestra encima, con reintentos.
       - name: Guardar el estado
+        if: always()
         run: |
-          if [[ -z "$(git status --porcelain state.json)" ]]; then
-            echo "Sin cambios en el estado."
+          if [[ ! -f state.json ]]; then
+            echo "No hay state.json que guardar."
             exit 0
           fi
+
           git config user.name  "github-actions[bot]"
           git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
-          # Primero sincronizamos, y SOLO despues montamos el archivo.
-          # (Si se hace al reves, el autostash lo desmonta y el commit falla.)
-          git pull --rebase --autostash
-          git add state.json
-          if git diff --cached --quiet; then
-            echo "Nada que confirmar despues de sincronizar."
-            exit 0
-          fi
-          git commit -m "estado: $(date -u '+%Y-%m-%d %H:%M UTC')"
-          git push
+
+          MIO="$(mktemp)"
+          cp state.json "$MIO"
+
+          for intento in 1 2 3; do
+            git fetch -q origin main || true
+            git reset -q --hard origin/main
+            cp "$MIO" state.json
+
+            if [[ -z "$(git status --porcelain state.json)" ]]; then
+              echo "Sin cambios que guardar."
+              exit 0
+            fi
+
+            git add state.json
+            git commit -qm "estado: $(date -u '+%Y-%m-%d %H:%M UTC')"
+
+            if git push -q origin main 2>/dev/null; then
+              echo "Estado guardado (intento $intento)."
+              exit 0
+            fi
+
+            echo "Otra corrida guardo primero. Reintento $intento de 3."
+            sleep $((intento * 3))
+          done
+
+          echo "AVISO: no pude guardar el registro despues de 3 intentos."
+          echo "Esto NO afecta las alertas de WhatsApp, que ya se enviaron."
+          exit 0
