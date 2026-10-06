@@ -1,8 +1,8 @@
 {
   "avisados": [],
-  "fallos": 3,
-  "ultima_revision": "2026-10-05 20:03:10",
-  "ultimo_error": "Expecting property name enclosed in double quotes: line 1 column 2 (char 1)",
+  "fallos": 0,
+  "ultima_revision": "2026-10-05 20:21:56",
+  "ultimo_error": null,
   "aviso_fallo_enviado": false,
   "bloqueos": 0,
   "ultimo_plan": "BAJA",
